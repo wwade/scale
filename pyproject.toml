@@ -1,7 +1,7 @@
 [project]
 name = "scale"
 version = "0.1.0"
-description = ""
+description = "Monitor Acaia scales over Bluetooth LE for bird weights and battery alerts"
 requires-python = ">=3.12"
 dependencies = [
     "pyacaia>=0.4.0",
@@ -43,7 +43,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["calsync", "calendar_api", "state_db", "sync_engine"]
+known-first-party = ["discover", "monitor", "simulator"]
 force-sort-within-sections = true
 
 [tool.ruff.format]

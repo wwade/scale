@@ -1,71 +1,107 @@
 # Project Overview
 
-This is a Python project for connecting to and communicating with Acaia coffee scales via Bluetooth LE. The primary use case is monitoring and logging bird weights continuously. It uses the `pyacaia` library for scale communication and `bleak` for Bluetooth device discovery.
+This is a Python project for monitoring Acaia coffee scales over Bluetooth LE. The main workflow is continuous bird-weight logging with optional battery monitoring and Gmail-based low-battery alerts.
+
+The project uses:
+
+- `pyacaia` for scale communication
+- `bleak` for Bluetooth device discovery
+- Gmail API OAuth credentials for optional battery alert emails
 
 # Development Environment
 
-This project uses uv for dependency management. All commands should be run through uv:
+This project uses `uv` for dependency management and command execution. Prefer running all commands through `uv`.
 
 ```bash
-# Quick test connection
-uv run python main.py
-
-# Discover Acaia scales
+# Discover nearby Acaia devices
 uv run python discover.py
 
-# Monitor scale and log bird weights
+# Monitor a real scale and write bird_weights.csv
 uv run monitor
 uv run monitor --interval 1.5 --max-weight 130  # Writes to bird_weights.csv
 
-# Add dependencies
-uv add <package>
+# Run the simulator instead of real BLE hardware
+uv run monitor --simulate
+
+# Exercise the simulator scenarios directly
+uv run python test_simulator.py
+
+# Lint and format
+uv run ruff check .
+uv run ruff format .
 ```
 
 # Key Files
 
-- `monitor.py` - Primary script for continuous bird weight monitoring with auto-tare and CSV logging
-- `simulator.py` - Mock Acaia scale for testing without hardware
-- `test_simulator.py` - Test script to verify simulator scenarios
-- `main.py` - Simple test script that connects to the scale and reads a single weight value
-- `discover.py` - Bluetooth discovery script to find Acaia devices and their MAC addresses
-- `pyproject.toml` - uv/hatchling configuration with dependencies (pyacaia, bleak)
+- `monitor.py` - Main monitoring CLI, auto-tare logic, CSV logging, battery checks, Gmail alerts
+- `discover.py` - BLE discovery script for nearby Acaia-like devices
+- `simulator.py` - Mock scale implementation for hardware-free development
+- `test_simulator.py` - Quick manual test runner for simulator scenarios
+- `pyproject.toml` - Project metadata, dependencies, and Ruff configuration
 
-# Working with Acaia Scales
+# Working With Acaia Scales
 
-The Acaia scale must be powered on and within Bluetooth range. Acaia devices advertise with Bluetooth names like:
-- `PROCHBT001` (common for Acaia Pearl)
+The scale must be powered on and within Bluetooth range. Likely Acaia devices advertise with names like:
+
+- `PROCHBT001`
 - `PR BT CB0E`
-- Or names containing: ACAIA, PYXIS, LUNAR, PEARL
+- names containing `ACAIA`, `PYXIS`, `LUNAR`, or `PEARL`
 
-MAC addresses are automatically discovered on first run and cached in `$XDG_STATE_HOME/acaia-scale/mac_address.txt` (or `~/.local/state/acaia-scale/mac_address.txt`). Use `--discover` flag to force rediscovery.
+On first successful discovery, the selected MAC address is cached in:
 
-# Bird Monitoring Features
+- `$XDG_STATE_HOME/acaia-scale/mac_address.txt`, or
+- `~/.local/state/acaia-scale/mac_address.txt`
 
-The `monitor.py` script includes:
-- **Auto-tare**: Automatically tares the scale when weight is non-zero but outside bird range (< 20g or > 60g)
-- **Event detection**: Logs when birds land and leave, with timestamps
-- **Continuous logging**: Records all weight readings while bird is present (20-60g range by default)
-- **CSV output**: Logs to CSV with columns: timestamp, weight_g, event (bird_landed, bird_present, bird_left)
+Use `--discover` to force rediscovery.
+
+# Monitoring Features
+
+`monitor.py` supports:
+
+- Auto-tare when the current reading is non-zero but outside the configured bird-weight range
+- Bird event detection for landing, presence, and departure
+- Continuous CSV logging with columns: `timestamp`, `weight_g`, `event`, `battery_pct`
+- Periodic battery checks through the connected scale
+- Optional low-battery email alerts via Gmail OAuth
+- Automatic reconnect attempts if the scale disconnects
+
+Common options:
+
+```bash
+uv run monitor --interval 1.0 --min-weight 20 --max-weight 60
+uv run monitor --discover
+uv run monitor --battery-threshold 15 --alert-email you@example.com
+uv run monitor --disable-battery-alerts
+```
+
+# Gmail Battery Alerts
+
+Battery alerts are optional. If `--alert-email` is provided, or `ALERT_EMAIL` is set, the monitor will try to send a low-battery alert using Gmail API credentials.
+
+Credential lookup order:
+
+- `./credentials.json`
+- `~/.config/acaia-scale/credentials.json`
+
+OAuth tokens are stored next to the chosen credentials file as `token.json`.
+
+If credentials are unavailable, the monitor explains the setup requirements at startup and exits unless battery alerts are disabled.
 
 # Testing Without Hardware
 
-Use the `--simulate` flag to test without an actual Acaia scale:
+Use `--simulate` to run without a real scale:
 
 ```bash
-# Test with random bird visits
 uv run monitor --simulate
-
-# Test specific scenarios
 uv run monitor --simulate --scenario quick_visits
 uv run monitor --simulate --scenario long_visit
 uv run monitor --simulate --scenario frequent_tare
-
-# Quick test of all scenarios
 uv run python test_simulator.py
 ```
 
-Available scenarios:
-- `random`: Random bird visits with occasional junk (default)
-- `quick_visits`: Frequent short visits (2-8 seconds)
-- `long_visit`: Longer sitting sessions (30-60 seconds)
-- `frequent_tare`: Lots of junk requiring auto-tare (50% of events)
+Available simulator scenarios:
+
+- `random` - Random bird visits with occasional junk
+- `quick_visits` - Frequent short visits
+- `long_visit` - Longer sitting sessions
+- `frequent_tare` - Frequent junk events that trigger tare behavior
