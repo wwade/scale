@@ -322,7 +322,7 @@ async def main():
     parser.add_argument("--log-file", default="bird_weights.csv", help="CSV file to log weights (default: bird_weights.csv)")
     parser.add_argument("--interval", type=float, default=1.5, help="Polling interval in seconds (default: %(default)s)")
     parser.add_argument("--min-weight", type=float, default=20.0, help="Minimum bird weight in grams (default: 20)")
-    parser.add_argument("--max-weight", type=float, default=60.0, help="Maximum bird weight in grams (default: 60)")
+    parser.add_argument("--max-weight", type=float, default=130.0, help="Maximum bird weight in grams (default: 130)")
     parser.add_argument("--battery-threshold", type=float, default=20.0, help="Battery percentage threshold for alerts (default: 20)")
     parser.add_argument("--battery-check-interval", type=int, default=300, help="Battery check interval in seconds (default: 300 = 5 min)")
     parser.add_argument("--alert-email", type=str, help="Email address to receive battery alerts (overrides ALERT_EMAIL env var)")
@@ -334,6 +334,20 @@ async def main():
 
     # Get alert email from command line or environment variable
     alert_email = args.alert_email or os.getenv('ALERT_EMAIL')
+
+    print("Monitor settings:")
+    print(f"  Mode: {'simulator' if args.simulate else 'hardware'}")
+    if args.simulate:
+        print(f"  Scenario: {args.scenario}")
+    print(f"  Log file: {args.log_file}")
+    print(f"  Polling interval: {args.interval}s")
+    print(f"  Bird weight range: {args.min_weight:g}g to {args.max_weight:g}g")
+    if alert_email and not args.disable_battery_alerts:
+        print(f"  Battery threshold: {args.battery_threshold:g}%")
+        print(f"  Battery check interval: {args.battery_check_interval}s")
+        print(f"  Battery alerts: {'disabled' if args.disable_battery_alerts else 'enabled'}")
+        print(f"  Alert email: {alert_email}")
+    print(flush=True)
 
     # Check Gmail OAuth credentials at startup if email alerts are enabled
     if alert_email and not args.disable_battery_alerts:
