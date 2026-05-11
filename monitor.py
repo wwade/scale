@@ -194,124 +194,133 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
     battery_alert_sent = False
     battery_monitoring_disabled = False
 
-    # Initialize CSV file
-    csv_file = open(log_file, 'a', newline='') # noqa: SIM115
-    csv_writer = csv.writer(csv_file)
+    # Effective-zero deadband for the scale: readings inside [-ZERO_DEADBAND_G,
+    # +ZERO_DEADBAND_G] are treated as zero so noise doesn't trigger auto-tares.
+    ZERO_DEADBAND_G = 0.2
 
-    # Write header if file is new
-    if csv_file.tell() == 0:
-        csv_writer.writerow(['timestamp', 'weight_g', 'event', 'battery_pct'])
-        csv_file.flush()
+    with open(log_file, 'a', newline='') as csv_file:
+        csv_writer = csv.writer(csv_file)
 
-    print(f"Monitoring scale (logging to {log_file})...")
-    print(f"Bird weight range: {min_bird_weight}-{max_bird_weight}g")
-    print("Press Ctrl+C to stop\n")
+        # Write header if file is new
+        if csv_file.tell() == 0:
+            csv_writer.writerow(['timestamp', 'weight_g', 'event', 'battery_pct'])
+            csv_file.flush()
 
-    try:
-        while not shutdown_event.is_set():
-            # Check battery level periodically
-            current_time = time.time()
-            battery_level = None
-            if not battery_monitoring_disabled and (current_time - last_battery_check) >= battery_check_interval:
-                try:
-                    battery_level = scale.battery
-                    if battery_level is not None:
-                        last_battery_check = current_time
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Battery: {battery_level:.1f}%")
+        print(f"Monitoring scale (logging to {log_file})...")
+        print(f"Bird weight range: {min_bird_weight}-{max_bird_weight}g")
+        print("Press Ctrl+C to stop\n")
 
-                        # Check if battery is below threshold
-                        if battery_level <= battery_threshold and not battery_alert_sent:
-                            if alert_email and not disable_battery_alerts:
-                                if send_battery_alert(battery_level, battery_threshold, alert_email, mac_address):
-                                    battery_alert_sent = True
-                            else:
-                                print(f"Warning: Battery low ({battery_level:.1f}%) but no alert email configured")
-                                battery_alert_sent = True
-
-                        # Reset alert flag if battery goes above threshold + 5% (hysteresis)
-                        elif battery_level > (battery_threshold + 5.0):
-                            battery_alert_sent = False
-                except AttributeError:
-                    if not battery_monitoring_disabled:
-                        print("Warning: scale.battery not available. Battery monitoring disabled.")
-                        battery_monitoring_disabled = True
-                except Exception as e:
-                    print(f"Warning: Error reading battery level: {e}")
-
-            # Check if the scale is still connected, perhaps it was turned off?
-            if not scale.connected:
-                print("\nScale disconnected, attempting to reconnect...")
-
-                # Try to disconnect cleanly if possible
-                with contextlib.suppress(Exception):
-                    scale.disconnect()
-
-                # Retry connection with exponential backoff
-                retry_delay = 1
-                max_retry_delay = 30
-                while not shutdown_event.is_set():
+        try:
+            while not shutdown_event.is_set():
+                # Check battery level periodically
+                current_time = time.time()
+                battery_level = None
+                if not battery_monitoring_disabled and (current_time - last_battery_check) >= battery_check_interval:
+                    # Advance the timer up front so a None/error reading doesn't
+                    # cause us to re-poll scale.battery every loop iteration.
+                    last_battery_check = current_time
                     try:
-                        scale = await connect_scale(use_simulator, scenario, mac_address)
-                        print("Reconnected successfully!")
-                        # Reset bird state after reconnection
-                        bird_start_time = None
-                        # Reset battery check timer but keep alert state
-                        last_battery_check = 0
-                        break
+                        battery_level = scale.battery
+                        if battery_level is not None:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Battery: {battery_level:.1f}%")
+
+                            # Check if battery is below threshold
+                            if battery_level <= battery_threshold and not battery_alert_sent:
+                                if alert_email and not disable_battery_alerts:
+                                    if send_battery_alert(battery_level, battery_threshold, alert_email, mac_address):
+                                        battery_alert_sent = True
+                                else:
+                                    print(f"Warning: Battery low ({battery_level:.1f}%) but no alert email configured")
+                                    battery_alert_sent = True
+
+                            # Reset alert flag if battery goes above threshold + 5% (hysteresis)
+                            elif battery_level > (battery_threshold + 5.0):
+                                battery_alert_sent = False
+                    except AttributeError:
+                        if not battery_monitoring_disabled:
+                            print("Warning: scale.battery not available. Battery monitoring disabled.")
+                            battery_monitoring_disabled = True
                     except Exception as e:
-                        print(f"Reconnection failed: {e}. Retrying in {retry_delay}s...")
-                        await asyncio.sleep(retry_delay)
-                        retry_delay = min(retry_delay * 2, max_retry_delay)
+                        print(f"Warning: Error reading battery level: {e}")
 
-                # If we exited due to shutdown, break outer loop
-                if shutdown_event.is_set():
-                    break
+                # Check if the scale is still connected, perhaps it was turned off?
+                if not scale.connected:
+                    print("\nScale disconnected, attempting to reconnect...")
 
-                # Give scale a moment to stabilize after reconnection
-                await asyncio.sleep(1)
-                continue
+                    # Try to disconnect cleanly if possible
+                    with contextlib.suppress(Exception):
+                        scale.disconnect()
 
-            weight = scale.weight or 0.0
-            timestamp = datetime.now().isoformat()
+                    # Retry connection with exponential backoff
+                    retry_delay = 1
+                    max_retry_delay = 30
+                    while not shutdown_event.is_set():
+                        try:
+                            scale = await connect_scale(use_simulator, scenario, mac_address)
+                            print("Reconnected successfully!")
+                            # Reset bird state after reconnection
+                            bird_start_time = None
+                            # Reset battery check timer but keep alert state
+                            last_battery_check = 0
+                            break
+                        except Exception as e:
+                            print(f"Reconnection failed: {e}. Retrying in {retry_delay}s...")
+                            await asyncio.sleep(retry_delay)
+                            retry_delay = min(retry_delay * 2, max_retry_delay)
 
-            # Auto-tare logic: tare if weight is non-zero but outside bird range
-            if weight != 0 and (weight < min_bird_weight or weight > max_bird_weight):
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-taring (weight: {weight:.1f}g)")
-                csv_writer.writerow([timestamp, f"{weight:.2f}", "auto_tare", battery_level if battery_level is not None else ""])
-                csv_file.flush()
-                scale.tare()
-                time.sleep(0.5)  # Give scale time to process tare
-                continue
+                    # If we exited due to shutdown, break outer loop
+                    if shutdown_event.is_set():
+                        break
 
-            # Detect bird landing
-            if bird_start_time is None and min_bird_weight <= weight <= max_bird_weight:
-                bird_start_time = datetime.now()
-                event = "bird_landed"
-                print(f"[{bird_start_time.strftime('%H:%M:%S')}] Bird landed: {weight:.1f}g")
-                csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
-                csv_file.flush()
+                    # Give scale a moment to stabilize after reconnection
+                    await asyncio.sleep(1)
+                    continue
 
-            # Log while bird is present
-            elif bird_start_time is not None and min_bird_weight <= weight <= max_bird_weight:
-                event = "bird_present"
-                csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
-                csv_file.flush()
+                weight = scale.weight or 0.0
+                timestamp = datetime.now().isoformat()
 
-            # Detect bird leaving
-            elif bird_start_time is not None and weight < min_bird_weight:
-                duration = (datetime.now() - bird_start_time).total_seconds()
-                bird_start_time = None
-                event = "bird_left"
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Bird left (duration: {duration:.1f}s)")
-                csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
-                csv_file.flush()
+                # Auto-tare logic: tare if weight is outside the zero deadband
+                # AND outside the bird range.
+                # TODO: this also fires while a bird is present (bird_start_time
+                # is not None) if the reading briefly leaves [min, max] due to
+                # noise or movement, which causes us to tare under the bird and
+                # lose the bird_left event. Should gate on bird_start_time is None.
+                if abs(weight) > ZERO_DEADBAND_G and (weight < min_bird_weight or weight > max_bird_weight):
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-taring (weight: {weight:.1f}g)")
+                    csv_writer.writerow([timestamp, f"{weight:.2f}", "auto_tare", battery_level if battery_level is not None else ""])
+                    csv_file.flush()
+                    scale.tare()
+                    await asyncio.sleep(0.5)  # Give scale time to process tare
+                    continue
 
-            await asyncio.sleep(interval)
+                # Detect bird landing
+                if bird_start_time is None and min_bird_weight <= weight <= max_bird_weight:
+                    bird_start_time = datetime.now()
+                    event = "bird_landed"
+                    print(f"[{bird_start_time.strftime('%H:%M:%S')}] Bird landed: {weight:.1f}g")
+                    csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
+                    csv_file.flush()
 
-    finally:
-        print("\nMonitoring stopped")
-        csv_file.close()
-        scale.disconnect()
+                # Log while bird is present
+                elif bird_start_time is not None and min_bird_weight <= weight <= max_bird_weight:
+                    event = "bird_present"
+                    csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
+                    csv_file.flush()
+
+                # Detect bird leaving
+                elif bird_start_time is not None and weight < min_bird_weight:
+                    duration = (datetime.now() - bird_start_time).total_seconds()
+                    bird_start_time = None
+                    event = "bird_left"
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Bird left (duration: {duration:.1f}s)")
+                    csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
+                    csv_file.flush()
+
+                await asyncio.sleep(interval)
+
+        finally:
+            print("\nMonitoring stopped")
+            scale.disconnect()
 
 
 async def main():
