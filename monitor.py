@@ -277,6 +277,8 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
             # Auto-tare logic: tare if weight is non-zero but outside bird range
             if weight != 0 and (weight < min_bird_weight or weight > max_bird_weight):
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-taring (weight: {weight:.1f}g)")
+                csv_writer.writerow([timestamp, f"{weight:.2f}", "auto_tare", battery_level if battery_level is not None else ""])
+                csv_file.flush()
                 scale.tare()
                 time.sleep(0.5)  # Give scale time to process tare
                 continue
