@@ -22,6 +22,81 @@ from pyacaia import AcaiaScale
 
 from simulator import create_mock_scale
 
+# Effective-zero deadband for the scale: readings inside
+# [-ZERO_DEADBAND_G, +ZERO_DEADBAND_G] are treated as zero so noise doesn't
+# trigger auto-tares.
+ZERO_DEADBAND_G = 0.2
+
+EVENT_AUTO_TARE = "auto_tare"
+EVENT_BIRD_LANDED = "bird_landed"
+EVENT_BIRD_PRESENT = "bird_present"
+EVENT_BIRD_LEFT = "bird_left"
+EVENT_IDLE = "idle"
+
+
+def classify_reading(
+    weight,
+    *,
+    bird_present,
+    min_bird_weight,
+    max_bird_weight,
+    zero_deadband=ZERO_DEADBAND_G,
+):
+    """Classify a single weight reading from the scale.
+
+    Pure function (no I/O, no time). Returns one of:
+
+    - ``"auto_tare"``:    Reading is outside both the zero deadband and the
+      bird range. Caller should tare and skip logging anything else this
+      iteration.
+    - ``"bird_landed"``:  No bird was present and reading is in the bird
+      range. Caller should record the visit start time.
+    - ``"bird_present"``: A bird was present and reading is still in the
+      bird range. Caller should log a sample row.
+    - ``"bird_left"``:    A bird was present and reading dropped below
+      `min_bird_weight`. Caller should close the visit.
+    - ``"idle"``:         No matching branch (e.g. no bird and weight
+      inside the deadband). Caller should not log anything.
+
+    This helper preserves the existing branching of `monitor_scale`
+    exactly, including the two quirks tracked in `TODO_BUGS.md`:
+
+    1. Auto-tare fires regardless of `bird_present`. A noisy reading that
+       briefly leaves the bird range while a bird is on the scale will
+       still tare under it.
+    2. Only `weight < min_bird_weight` ends a visit. A reading that
+       jumps above `max_bird_weight` while a bird is present takes the
+       (unconditional) auto-tare branch above instead of `bird_left`.
+
+    Fixing those is intentionally out of scope for this refactor; the
+    classifier exists so each fix can land in its own behavior-change PR
+    with its own tests.
+
+    Args:
+        weight: Current scale reading in grams.
+        bird_present: Whether a visit is currently in progress.
+        min_bird_weight: Lower bound (inclusive) of the bird-weight range.
+        max_bird_weight: Upper bound (inclusive) of the bird-weight range.
+        zero_deadband: Magnitude below which readings are treated as zero
+            so noise doesn't trigger an auto-tare.
+    """
+    in_range = min_bird_weight <= weight <= max_bird_weight
+    out_of_range = weight < min_bird_weight or weight > max_bird_weight
+
+    if abs(weight) > zero_deadband and out_of_range:
+        return EVENT_AUTO_TARE
+
+    if not bird_present and in_range:
+        return EVENT_BIRD_LANDED
+
+    if bird_present and in_range:
+        return EVENT_BIRD_PRESENT
+
+    if bird_present and weight < min_bird_weight:
+        return EVENT_BIRD_LEFT
+
+    return EVENT_IDLE
+
 
 def get_state_file_path():
     """Get the path to the state file using XDG_STATE_HOME."""
@@ -238,10 +313,6 @@ async def monitor_scale(
     battery_alert_sent = False
     battery_monitoring_disabled = False
 
-    # Effective-zero deadband for the scale: readings inside [-ZERO_DEADBAND_G,
-    # +ZERO_DEADBAND_G] are treated as zero so noise doesn't trigger auto-tares.
-    ZERO_DEADBAND_G = 0.2
-
     with open(log_file, "a", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
 
@@ -334,76 +405,47 @@ async def monitor_scale(
                 weight = scale.weight or 0.0
                 timestamp = datetime.now().isoformat()
 
-                # Auto-tare logic: tare if weight is outside the zero deadband
-                # AND outside the bird range.
-                # TODO: this also fires while a bird is present (bird_start_time
-                # is not None) if the reading briefly leaves [min, max] due to
-                # noise or movement, which causes us to tare under the bird and
-                # lose the bird_left event. Should gate on bird_start_time is None.
-                if abs(weight) > ZERO_DEADBAND_G and (
-                    weight < min_bird_weight or weight > max_bird_weight
-                ):
+                classification = classify_reading(
+                    weight,
+                    bird_present=bird_start_time is not None,
+                    min_bird_weight=min_bird_weight,
+                    max_bird_weight=max_bird_weight,
+                )
+
+                # Update bird-visit state and emit the human-readable
+                # status line. The branching here mirrors the original
+                # loop exactly — including which `datetime.now()` call
+                # the print uses — so see `classify_reading` for the
+                # known quirks this preserves.
+                if classification == EVENT_AUTO_TARE:
                     print(
                         f"[{datetime.now().strftime('%H:%M:%S')}] Auto-taring (weight: {weight:.1f}g)"
                     )
-                    csv_writer.writerow(
-                        [
-                            timestamp,
-                            f"{weight:.2f}",
-                            "auto_tare",
-                            battery_level if battery_level is not None else "",
-                        ]
-                    )
-                    csv_file.flush()
-                    scale.tare()
-                    await asyncio.sleep(0.5)  # Give scale time to process tare
-                    continue
-
-                # Detect bird landing
-                if bird_start_time is None and min_bird_weight <= weight <= max_bird_weight:
+                elif classification == EVENT_BIRD_LANDED:
                     bird_start_time = datetime.now()
-                    event = "bird_landed"
                     print(f"[{bird_start_time.strftime('%H:%M:%S')}] Bird landed: {weight:.1f}g")
-                    csv_writer.writerow(
-                        [
-                            timestamp,
-                            f"{weight:.2f}",
-                            event,
-                            battery_level if battery_level is not None else "",
-                        ]
-                    )
-                    csv_file.flush()
-
-                # Log while bird is present
-                elif bird_start_time is not None and min_bird_weight <= weight <= max_bird_weight:
-                    event = "bird_present"
-                    csv_writer.writerow(
-                        [
-                            timestamp,
-                            f"{weight:.2f}",
-                            event,
-                            battery_level if battery_level is not None else "",
-                        ]
-                    )
-                    csv_file.flush()
-
-                # Detect bird leaving
-                elif bird_start_time is not None and weight < min_bird_weight:
+                elif classification == EVENT_BIRD_LEFT:
                     duration = (datetime.now() - bird_start_time).total_seconds()
                     bird_start_time = None
-                    event = "bird_left"
                     print(
                         f"[{datetime.now().strftime('%H:%M:%S')}] Bird left (duration: {duration:.1f}s)"
                     )
+
+                if classification != EVENT_IDLE:
                     csv_writer.writerow(
                         [
                             timestamp,
                             f"{weight:.2f}",
-                            event,
+                            classification,
                             battery_level if battery_level is not None else "",
                         ]
                     )
                     csv_file.flush()
+
+                if classification == EVENT_AUTO_TARE:
+                    scale.tare()
+                    await asyncio.sleep(0.5)  # Give scale time to process tare
+                    continue
 
                 await asyncio.sleep(interval)
 
