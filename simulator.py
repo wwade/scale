@@ -5,6 +5,7 @@ import time
 
 class BirdState(Enum):
     """Possible states of the simulated scale."""
+
     EMPTY = "empty"
     BIRD_PRESENT = "bird_present"
     JUNK = "junk"  # Something too light or too heavy
