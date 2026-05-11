@@ -16,7 +16,10 @@ async def discover_acaia_scales():
         name = device.name or "Unknown"
         print(f"  {device.address} - {name}")
 
-        if any(keyword in name.upper() for keyword in ["PROCH", "PR BT", "ACAIA", "PYXIS", "LUNAR", "PEARL"]):
+        if any(
+            keyword in name.upper()
+            for keyword in ["PROCH", "PR BT", "ACAIA", "PYXIS", "LUNAR", "PEARL"]
+        ):
             acaia_devices.append(device)
             print("    ^^^ Possible Acaia device!")
 
@@ -30,6 +33,7 @@ async def discover_acaia_scales():
         print("\nNo Acaia devices found. Make sure your scale is on and in pairing mode.")
 
     return acaia_devices
+
 
 if __name__ == "__main__":
     asyncio.run(discover_acaia_scales())

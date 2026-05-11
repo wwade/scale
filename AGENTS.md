@@ -11,7 +11,7 @@ Active scripts in the repo:
 - `monitor.py`: main monitoring loop, auto-tare logic, CSV logging, battery checks, Gmail alerts
 - `discover.py`: Bluetooth discovery for nearby Acaia devices
 - `simulator.py`: simulated scale behavior for development without hardware
-- `test_simulator.py`: lightweight simulator test runner
+- `tests/`: pytest suite (simulator state machine, monitor helpers, import smoke tests)
 
 ## Tooling
 
@@ -26,9 +26,9 @@ Common commands:
 ```bash
 uv run python monitor.py --simulate
 uv run python discover.py
-uv run python test_simulator.py
+uv run pytest
 uv run ruff check .
-uv run ruff format .
+uv run ruff format --check .
 ```
 
 ## Working Conventions
@@ -55,10 +55,12 @@ These files are currently untracked. Do not delete, rewrite, or normalize them u
 
 Use the least expensive validation that matches the change:
 
-- For pure logic changes: `uv run python test_simulator.py`
+- For pure logic changes: `uv run pytest`
 - For lint-sensitive edits: `uv run ruff check .`
-- For formatting-sensitive edits: `uv run ruff format .`
+- For formatting-sensitive edits: `uv run ruff format --check .`
 - For hardware flows: prefer discovery or monitor commands only if the task specifically depends on real BLE access
+
+CI runs `ruff check`, `ruff format --check`, and `pytest` on every push and pull request — match these locally before pushing.
 
 ## Known Repo Mismatch
 

@@ -52,12 +52,12 @@ def save_mac_address(mac):
 def get_gmail_credentials():
     """Get Gmail API credentials from credentials.json and token.json."""
     # Gmail API scopes for sending emails
-    SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+    SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
     # Look for credentials in project directory or ~/.config/acaia-scale/
     credentials_locations = [
-        Path('credentials.json'),
-        Path.home() / '.config' / 'acaia-scale' / 'credentials.json'
+        Path("credentials.json"),
+        Path.home() / ".config" / "acaia-scale" / "credentials.json",
     ]
 
     credentials_file = None
@@ -70,7 +70,7 @@ def get_gmail_credentials():
         return None
 
     # Token file stored in same directory as credentials
-    token_file = credentials_file.parent / 'token.json'
+    token_file = credentials_file.parent / "token.json"
 
     creds = None
     # Load token if it exists
@@ -82,8 +82,7 @@ def get_gmail_credentials():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                str(credentials_file), SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(str(credentials_file), SCOPES)
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
         token_file.write_text(creds.to_json())
@@ -111,13 +110,13 @@ def send_battery_alert(battery_level, threshold, recipient_email, mac_address=No
             return False
 
         # Build Gmail service
-        service = build('gmail', 'v1', credentials=creds)
+        service = build("gmail", "v1", credentials=creds)
 
         # Create email message
         subject = "Low Battery Alert: Acaia Scale"
         body = f"""Battery Alert for Acaia Scale
 
-Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 Battery Level: {battery_level:.1f}%
 Alert Threshold: {threshold:.1f}%
 """
@@ -130,12 +129,12 @@ Please charge or replace the battery soon to avoid monitoring interruption.
 """
 
         message = MIMEText(body)
-        message['to'] = recipient_email
-        message['subject'] = subject
+        message["to"] = recipient_email
+        message["subject"] = subject
 
         # Encode message
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        create_message = {'raw': encoded_message}
+        create_message = {"raw": encoded_message}
 
         # Send email
         service.users().messages().send(userId="me", body=create_message).execute()
@@ -158,12 +157,17 @@ async def discover_acaia_scale():
     acaia_devices = []
     for device in devices:
         name = device.name or "Unknown"
-        if any(keyword in name.upper() for keyword in ["PROCH", "PR BT", "ACAIA", "PYXIS", "LUNAR", "PEARL"]):
+        if any(
+            keyword in name.upper()
+            for keyword in ["PROCH", "PR BT", "ACAIA", "PYXIS", "LUNAR", "PEARL"]
+        ):
             acaia_devices.append(device)
             print(f"Found Acaia device: {device.address} - {name}")
 
     if not acaia_devices:
-        raise RuntimeError("No Acaia devices found. Make sure your scale is on and in pairing mode.")
+        raise RuntimeError(
+            "No Acaia devices found. Make sure your scale is on and in pairing mode."
+        )
 
     if len(acaia_devices) > 1:
         print("\nMultiple Acaia devices found:")
@@ -187,7 +191,21 @@ async def connect_scale(use_simulator, scenario, mac_address):
         return scale
 
 
-async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, scenario="random", mac_address=None, interval=1.0, min_bird_weight=25, max_bird_weight=60, battery_threshold=20.0, battery_check_interval=300, alert_email=None, disable_battery_alerts=False):
+async def monitor_scale(
+    scale,
+    log_file,
+    shutdown_event,
+    use_simulator=False,
+    scenario="random",
+    mac_address=None,
+    interval=1.0,
+    min_bird_weight=25,
+    max_bird_weight=60,
+    battery_threshold=20.0,
+    battery_check_interval=300,
+    alert_email=None,
+    disable_battery_alerts=False,
+):
     """Monitor scale continuously and log bird weights."""
     bird_start_time = None
     last_battery_check = 0
@@ -198,12 +216,12 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
     # +ZERO_DEADBAND_G] are treated as zero so noise doesn't trigger auto-tares.
     ZERO_DEADBAND_G = 0.2
 
-    with open(log_file, 'a', newline='') as csv_file:
+    with open(log_file, "a", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
 
         # Write header if file is new
         if csv_file.tell() == 0:
-            csv_writer.writerow(['timestamp', 'weight_g', 'event', 'battery_pct'])
+            csv_writer.writerow(["timestamp", "weight_g", "event", "battery_pct"])
             csv_file.flush()
 
         print(f"Monitoring scale (logging to {log_file})...")
@@ -215,22 +233,31 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
                 # Check battery level periodically
                 current_time = time.time()
                 battery_level = None
-                if not battery_monitoring_disabled and (current_time - last_battery_check) >= battery_check_interval:
+                if (
+                    not battery_monitoring_disabled
+                    and (current_time - last_battery_check) >= battery_check_interval
+                ):
                     # Advance the timer up front so a None/error reading doesn't
                     # cause us to re-poll scale.battery every loop iteration.
                     last_battery_check = current_time
                     try:
                         battery_level = scale.battery
                         if battery_level is not None:
-                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Battery: {battery_level:.1f}%")
+                            print(
+                                f"[{datetime.now().strftime('%H:%M:%S')}] Battery: {battery_level:.1f}%"
+                            )
 
                             # Check if battery is below threshold
                             if battery_level <= battery_threshold and not battery_alert_sent:
                                 if alert_email and not disable_battery_alerts:
-                                    if send_battery_alert(battery_level, battery_threshold, alert_email, mac_address):
+                                    if send_battery_alert(
+                                        battery_level, battery_threshold, alert_email, mac_address
+                                    ):
                                         battery_alert_sent = True
                                 else:
-                                    print(f"Warning: Battery low ({battery_level:.1f}%) but no alert email configured")
+                                    print(
+                                        f"Warning: Battery low ({battery_level:.1f}%) but no alert email configured"
+                                    )
                                     battery_alert_sent = True
 
                             # Reset alert flag if battery goes above threshold + 5% (hysteresis)
@@ -238,7 +265,9 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
                                 battery_alert_sent = False
                     except AttributeError:
                         if not battery_monitoring_disabled:
-                            print("Warning: scale.battery not available. Battery monitoring disabled.")
+                            print(
+                                "Warning: scale.battery not available. Battery monitoring disabled."
+                            )
                             battery_monitoring_disabled = True
                     except Exception as e:
                         print(f"Warning: Error reading battery level: {e}")
@@ -285,9 +314,20 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
                 # is not None) if the reading briefly leaves [min, max] due to
                 # noise or movement, which causes us to tare under the bird and
                 # lose the bird_left event. Should gate on bird_start_time is None.
-                if abs(weight) > ZERO_DEADBAND_G and (weight < min_bird_weight or weight > max_bird_weight):
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-taring (weight: {weight:.1f}g)")
-                    csv_writer.writerow([timestamp, f"{weight:.2f}", "auto_tare", battery_level if battery_level is not None else ""])
+                if abs(weight) > ZERO_DEADBAND_G and (
+                    weight < min_bird_weight or weight > max_bird_weight
+                ):
+                    print(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] Auto-taring (weight: {weight:.1f}g)"
+                    )
+                    csv_writer.writerow(
+                        [
+                            timestamp,
+                            f"{weight:.2f}",
+                            "auto_tare",
+                            battery_level if battery_level is not None else "",
+                        ]
+                    )
                     csv_file.flush()
                     scale.tare()
                     await asyncio.sleep(0.5)  # Give scale time to process tare
@@ -298,13 +338,27 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
                     bird_start_time = datetime.now()
                     event = "bird_landed"
                     print(f"[{bird_start_time.strftime('%H:%M:%S')}] Bird landed: {weight:.1f}g")
-                    csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
+                    csv_writer.writerow(
+                        [
+                            timestamp,
+                            f"{weight:.2f}",
+                            event,
+                            battery_level if battery_level is not None else "",
+                        ]
+                    )
                     csv_file.flush()
 
                 # Log while bird is present
                 elif bird_start_time is not None and min_bird_weight <= weight <= max_bird_weight:
                     event = "bird_present"
-                    csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
+                    csv_writer.writerow(
+                        [
+                            timestamp,
+                            f"{weight:.2f}",
+                            event,
+                            battery_level if battery_level is not None else "",
+                        ]
+                    )
                     csv_file.flush()
 
                 # Detect bird leaving
@@ -312,8 +366,17 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
                     duration = (datetime.now() - bird_start_time).total_seconds()
                     bird_start_time = None
                     event = "bird_left"
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Bird left (duration: {duration:.1f}s)")
-                    csv_writer.writerow([timestamp, f"{weight:.2f}", event, battery_level if battery_level is not None else ""])
+                    print(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] Bird left (duration: {duration:.1f}s)"
+                    )
+                    csv_writer.writerow(
+                        [
+                            timestamp,
+                            f"{weight:.2f}",
+                            event,
+                            battery_level if battery_level is not None else "",
+                        ]
+                    )
                     csv_file.flush()
 
                 await asyncio.sleep(interval)
@@ -326,25 +389,62 @@ async def monitor_scale(scale, log_file, shutdown_event, use_simulator=False, sc
 async def main():
     parser = argparse.ArgumentParser(description="Monitor Acaia scale for bird weights")
     parser.add_argument("--discover", action="store_true", help="Force rediscovery of the scale")
-    parser.add_argument("--simulate", action="store_true", help="Use simulator instead of real hardware")
-    parser.add_argument("--scenario", default="random",
-                        choices=["random", "quick_visits", "long_visit", "frequent_tare"],
-                        help="Simulation scenario (only with --simulate)")
-    parser.add_argument("--log-file", default="bird_weights.csv", help="CSV file to log weights (default: bird_weights.csv)")
-    parser.add_argument("--interval", type=float, default=1.5, help="Polling interval in seconds (default: %(default)s)")
-    parser.add_argument("--min-weight", type=float, default=20.0, help="Minimum bird weight in grams (default: 20)")
-    parser.add_argument("--max-weight", type=float, default=130.0, help="Maximum bird weight in grams (default: 130)")
-    parser.add_argument("--battery-threshold", type=float, default=20.0, help="Battery percentage threshold for alerts (default: 20)")
-    parser.add_argument("--battery-check-interval", type=int, default=300, help="Battery check interval in seconds (default: 300 = 5 min)")
-    parser.add_argument("--alert-email", type=str, help="Email address to receive battery alerts (overrides ALERT_EMAIL env var)")
-    parser.add_argument("--disable-battery-alerts", action="store_true", help="Disable battery email alerts")
+    parser.add_argument(
+        "--simulate", action="store_true", help="Use simulator instead of real hardware"
+    )
+    parser.add_argument(
+        "--scenario",
+        default="random",
+        choices=["random", "quick_visits", "long_visit", "frequent_tare"],
+        help="Simulation scenario (only with --simulate)",
+    )
+    parser.add_argument(
+        "--log-file",
+        default="bird_weights.csv",
+        help="CSV file to log weights (default: bird_weights.csv)",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=1.5,
+        help="Polling interval in seconds (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--min-weight", type=float, default=20.0, help="Minimum bird weight in grams (default: 20)"
+    )
+    parser.add_argument(
+        "--max-weight",
+        type=float,
+        default=130.0,
+        help="Maximum bird weight in grams (default: 130)",
+    )
+    parser.add_argument(
+        "--battery-threshold",
+        type=float,
+        default=20.0,
+        help="Battery percentage threshold for alerts (default: 20)",
+    )
+    parser.add_argument(
+        "--battery-check-interval",
+        type=int,
+        default=300,
+        help="Battery check interval in seconds (default: 300 = 5 min)",
+    )
+    parser.add_argument(
+        "--alert-email",
+        type=str,
+        help="Email address to receive battery alerts (overrides ALERT_EMAIL env var)",
+    )
+    parser.add_argument(
+        "--disable-battery-alerts", action="store_true", help="Disable battery email alerts"
+    )
     args = parser.parse_args()
 
     # logging.basicConfig(level=logging.DEBUG)
     # logging.getLogger('pygatt').setLevel(logging.DEBUG)
 
     # Get alert email from command line or environment variable
-    alert_email = args.alert_email or os.getenv('ALERT_EMAIL')
+    alert_email = args.alert_email or os.getenv("ALERT_EMAIL")
 
     print("Monitor settings:")
     print(f"  Mode: {'simulator' if args.simulate else 'hardware'}")
@@ -419,7 +519,7 @@ async def main():
         battery_threshold=args.battery_threshold,
         battery_check_interval=args.battery_check_interval,
         alert_email=alert_email,
-        disable_battery_alerts=args.disable_battery_alerts
+        disable_battery_alerts=args.disable_battery_alerts,
     )
 
 

@@ -43,7 +43,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["discover", "monitor", "simulator"]
+known-first-party = ["discover", "monitor", "simulator", "tests"]
 force-sort-within-sections = true
 
 [tool.ruff.format]
@@ -52,8 +52,14 @@ indent-style = "space"
 
 [dependency-groups]
 dev = [
+    "pytest>=8.3",
     "ruff>=0.15.12",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
 
 [tool.hatch.build.targets.wheel]
 include = ["monitor.py"]
