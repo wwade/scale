@@ -20,7 +20,82 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from pyacaia import AcaiaScale
 
-from simulator import create_mock_scale
+from simulator import SCENARIOS, create_mock_scale
+
+# Effective-zero deadband for the scale: readings inside
+# [-ZERO_DEADBAND_G, +ZERO_DEADBAND_G] are treated as zero so noise doesn't
+# trigger auto-tares.
+ZERO_DEADBAND_G = 0.2
+
+EVENT_AUTO_TARE = "auto_tare"
+EVENT_BIRD_LANDED = "bird_landed"
+EVENT_BIRD_PRESENT = "bird_present"
+EVENT_BIRD_LEFT = "bird_left"
+EVENT_IDLE = "idle"
+
+
+def classify_reading(
+    weight,
+    *,
+    bird_present,
+    min_bird_weight,
+    max_bird_weight,
+    zero_deadband=ZERO_DEADBAND_G,
+):
+    """Classify a single weight reading from the scale.
+
+    Pure function (no I/O, no time). Returns one of:
+
+    - ``"auto_tare"``:    Reading is outside both the zero deadband and the
+      bird range. Caller should tare and skip logging anything else this
+      iteration.
+    - ``"bird_landed"``:  No bird was present and reading is in the bird
+      range. Caller should record the visit start time.
+    - ``"bird_present"``: A bird was present and reading is still in the
+      bird range. Caller should log a sample row.
+    - ``"bird_left"``:    A bird was present and reading dropped below
+      `min_bird_weight`. Caller should close the visit.
+    - ``"idle"``:         No matching branch (e.g. no bird and weight
+      inside the deadband). Caller should not log anything.
+
+    This helper preserves the existing branching of `monitor_scale`
+    exactly, including the two quirks tracked in `TODO_BUGS.md`:
+
+    1. Auto-tare fires regardless of `bird_present`. A noisy reading that
+       briefly leaves the bird range while a bird is on the scale will
+       still tare under it.
+    2. Only `weight < min_bird_weight` ends a visit. A reading that
+       jumps above `max_bird_weight` while a bird is present takes the
+       (unconditional) auto-tare branch above instead of `bird_left`.
+
+    Fixing those is intentionally out of scope for this refactor; the
+    classifier exists so each fix can land in its own behavior-change PR
+    with its own tests.
+
+    Args:
+        weight: Current scale reading in grams.
+        bird_present: Whether a visit is currently in progress.
+        min_bird_weight: Lower bound (inclusive) of the bird-weight range.
+        max_bird_weight: Upper bound (inclusive) of the bird-weight range.
+        zero_deadband: Magnitude below which readings are treated as zero
+            so noise doesn't trigger an auto-tare.
+    """
+    in_range = min_bird_weight <= weight <= max_bird_weight
+    out_of_range = weight < min_bird_weight or weight > max_bird_weight
+
+    if abs(weight) > zero_deadband and out_of_range:
+        return EVENT_AUTO_TARE
+
+    if not bird_present and in_range:
+        return EVENT_BIRD_LANDED
+
+    if bird_present and in_range:
+        return EVENT_BIRD_PRESENT
+
+    if bird_present and weight < min_bird_weight:
+        return EVENT_BIRD_LEFT
+
+    return EVENT_IDLE
 
 
 def get_state_file_path():
@@ -90,6 +165,51 @@ def get_gmail_credentials():
     return creds
 
 
+def build_battery_alert_message(
+    battery_level,
+    threshold,
+    recipient_email,
+    *,
+    mac_address=None,
+    now=None,
+):
+    """Build the MIME message for a low-battery alert email.
+
+    Pure helper, no Gmail API dependency, so it's easy to unit-test.
+
+    Args:
+        battery_level: Current battery percentage.
+        threshold: Battery threshold that triggered the alert.
+        recipient_email: Address to send the alert to.
+        mac_address: Optional scale MAC to include in the body.
+        now: Optional `datetime` to stamp the body with. Defaults to
+            `datetime.now()`. Tests pass a fixed value for determinism.
+
+    Returns:
+        `email.mime.text.MIMEText` with `to` and `subject` headers set.
+    """
+    timestamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    subject = "Low Battery Alert: Acaia Scale"
+    body = f"""Battery Alert for Acaia Scale
+
+Timestamp: {timestamp}
+Battery Level: {battery_level:.1f}%
+Alert Threshold: {threshold:.1f}%
+"""
+    if mac_address:
+        body += f"Scale MAC Address: {mac_address}\n"
+
+    body += """
+This is an automated alert from your Acaia scale monitoring system.
+Please charge or replace the battery soon to avoid monitoring interruption.
+"""
+
+    message = MIMEText(body)
+    message["to"] = recipient_email
+    message["subject"] = subject
+    return message
+
+
 def send_battery_alert(battery_level, threshold, recipient_email, mac_address=None):
     """Send battery alert email via Gmail API.
 
@@ -109,34 +229,15 @@ def send_battery_alert(battery_level, threshold, recipient_email, mac_address=No
             print("To enable email alerts, set up credentials.json (see documentation)")
             return False
 
-        # Build Gmail service
         service = build("gmail", "v1", credentials=creds)
 
-        # Create email message
-        subject = "Low Battery Alert: Acaia Scale"
-        body = f"""Battery Alert for Acaia Scale
+        message = build_battery_alert_message(
+            battery_level, threshold, recipient_email, mac_address=mac_address
+        )
 
-Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-Battery Level: {battery_level:.1f}%
-Alert Threshold: {threshold:.1f}%
-"""
-        if mac_address:
-            body += f"Scale MAC Address: {mac_address}\n"
-
-        body += """
-This is an automated alert from your Acaia scale monitoring system.
-Please charge or replace the battery soon to avoid monitoring interruption.
-"""
-
-        message = MIMEText(body)
-        message["to"] = recipient_email
-        message["subject"] = subject
-
-        # Encode message
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         create_message = {"raw": encoded_message}
 
-        # Send email
         service.users().messages().send(userId="me", body=create_message).execute()
         print(f"Battery alert email sent to {recipient_email}")
         return True
@@ -179,10 +280,10 @@ async def discover_acaia_scale():
     return acaia_devices[0].address
 
 
-async def connect_scale(use_simulator, scenario, mac_address):
+async def connect_scale(use_simulator, scenario, mac_address, *, seed=None):
     """Connect to scale (simulator or real hardware)."""
     if use_simulator:
-        scale = create_mock_scale(scenario=scenario)
+        scale = create_mock_scale(scenario=scenario, seed=seed)
         scale.connect()
         return scale
     else:
@@ -205,16 +306,20 @@ async def monitor_scale(
     battery_check_interval=300,
     alert_email=None,
     disable_battery_alerts=False,
+    max_events=None,
 ):
-    """Monitor scale continuously and log bird weights."""
+    """Monitor scale continuously and log bird weights.
+
+    Args:
+        max_events: If set, return after writing this many event rows to
+            the CSV (header row not counted). Useful for tests and
+            short-run smoke checks. `None` means run forever.
+    """
     bird_start_time = None
     last_battery_check = 0
     battery_alert_sent = False
     battery_monitoring_disabled = False
-
-    # Effective-zero deadband for the scale: readings inside [-ZERO_DEADBAND_G,
-    # +ZERO_DEADBAND_G] are treated as zero so noise doesn't trigger auto-tares.
-    ZERO_DEADBAND_G = 0.2
+    event_count = 0
 
     with open(log_file, "a", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
@@ -308,76 +413,51 @@ async def monitor_scale(
                 weight = scale.weight or 0.0
                 timestamp = datetime.now().isoformat()
 
-                # Auto-tare logic: tare if weight is outside the zero deadband
-                # AND outside the bird range.
-                # TODO: this also fires while a bird is present (bird_start_time
-                # is not None) if the reading briefly leaves [min, max] due to
-                # noise or movement, which causes us to tare under the bird and
-                # lose the bird_left event. Should gate on bird_start_time is None.
-                if abs(weight) > ZERO_DEADBAND_G and (
-                    weight < min_bird_weight or weight > max_bird_weight
-                ):
+                classification = classify_reading(
+                    weight,
+                    bird_present=bird_start_time is not None,
+                    min_bird_weight=min_bird_weight,
+                    max_bird_weight=max_bird_weight,
+                )
+
+                # Update bird-visit state and emit the human-readable
+                # status line. The branching here mirrors the original
+                # loop exactly — including which `datetime.now()` call
+                # the print uses — so see `classify_reading` for the
+                # known quirks this preserves.
+                if classification == EVENT_AUTO_TARE:
                     print(
                         f"[{datetime.now().strftime('%H:%M:%S')}] Auto-taring (weight: {weight:.1f}g)"
                     )
-                    csv_writer.writerow(
-                        [
-                            timestamp,
-                            f"{weight:.2f}",
-                            "auto_tare",
-                            battery_level if battery_level is not None else "",
-                        ]
-                    )
-                    csv_file.flush()
-                    scale.tare()
-                    await asyncio.sleep(0.5)  # Give scale time to process tare
-                    continue
-
-                # Detect bird landing
-                if bird_start_time is None and min_bird_weight <= weight <= max_bird_weight:
+                elif classification == EVENT_BIRD_LANDED:
                     bird_start_time = datetime.now()
-                    event = "bird_landed"
                     print(f"[{bird_start_time.strftime('%H:%M:%S')}] Bird landed: {weight:.1f}g")
-                    csv_writer.writerow(
-                        [
-                            timestamp,
-                            f"{weight:.2f}",
-                            event,
-                            battery_level if battery_level is not None else "",
-                        ]
-                    )
-                    csv_file.flush()
-
-                # Log while bird is present
-                elif bird_start_time is not None and min_bird_weight <= weight <= max_bird_weight:
-                    event = "bird_present"
-                    csv_writer.writerow(
-                        [
-                            timestamp,
-                            f"{weight:.2f}",
-                            event,
-                            battery_level if battery_level is not None else "",
-                        ]
-                    )
-                    csv_file.flush()
-
-                # Detect bird leaving
-                elif bird_start_time is not None and weight < min_bird_weight:
+                elif classification == EVENT_BIRD_LEFT:
                     duration = (datetime.now() - bird_start_time).total_seconds()
                     bird_start_time = None
-                    event = "bird_left"
                     print(
                         f"[{datetime.now().strftime('%H:%M:%S')}] Bird left (duration: {duration:.1f}s)"
                     )
+
+                if classification != EVENT_IDLE:
                     csv_writer.writerow(
                         [
                             timestamp,
                             f"{weight:.2f}",
-                            event,
+                            classification,
                             battery_level if battery_level is not None else "",
                         ]
                     )
                     csv_file.flush()
+                    event_count += 1
+                    if max_events is not None and event_count >= max_events:
+                        print(f"\nReached --max-events={max_events}, exiting.")
+                        return
+
+                if classification == EVENT_AUTO_TARE:
+                    scale.tare()
+                    await asyncio.sleep(0.5)  # Give scale time to process tare
+                    continue
 
                 await asyncio.sleep(interval)
 
@@ -395,7 +475,7 @@ async def main():
     parser.add_argument(
         "--scenario",
         default="random",
-        choices=["random", "quick_visits", "long_visit", "frequent_tare"],
+        choices=list(SCENARIOS),
         help="Simulation scenario (only with --simulate)",
     )
     parser.add_argument(
@@ -437,6 +517,18 @@ async def main():
     )
     parser.add_argument(
         "--disable-battery-alerts", action="store_true", help="Disable battery email alerts"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed the simulator RNG for deterministic runs (only with --simulate)",
+    )
+    parser.add_argument(
+        "--max-events",
+        type=int,
+        default=None,
+        help="Exit after writing this many event rows to the CSV (useful for tests)",
     )
     args = parser.parse_args()
 
@@ -487,7 +579,7 @@ async def main():
     mac = None
     if args.simulate:
         print(f"Using simulator with scenario: {args.scenario}")
-        scale = await connect_scale(args.simulate, args.scenario, None)
+        scale = await connect_scale(args.simulate, args.scenario, None, seed=args.seed)
     else:
         # Get MAC address
         if not args.discover:
@@ -502,7 +594,7 @@ async def main():
 
         # Connect to scale
         print(f"Connecting to Acaia scale at {mac}...")
-        scale = await connect_scale(args.simulate, args.scenario, mac)
+        scale = await connect_scale(args.simulate, args.scenario, mac, seed=args.seed)
         print("Connected!")
 
     # Start monitoring
@@ -520,6 +612,7 @@ async def main():
         battery_check_interval=args.battery_check_interval,
         alert_email=alert_email,
         disable_battery_alerts=args.disable_battery_alerts,
+        max_events=args.max_events,
     )
 
 

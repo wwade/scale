@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from simulator import BirdState, MockAcaiaScale, create_mock_scale
+from simulator import SCENARIOS, BirdState, MockAcaiaScale, create_mock_scale
 
 
 @pytest.fixture(autouse=True)
@@ -160,10 +160,7 @@ class TestStateTransitions:
 
 
 class TestScenarios:
-    @pytest.mark.parametrize(
-        "scenario",
-        ["random", "quick_visits", "long_visit", "frequent_tare"],
-    )
+    @pytest.mark.parametrize("scenario", SCENARIOS)
     def test_scenarios_have_valid_parameters(self, scenario):
         scale = create_mock_scale(scenario=scenario)
 
@@ -183,6 +180,63 @@ class TestScenarios:
         long_scale = create_mock_scale(scenario="long_visit")
         quick_scale = create_mock_scale(scenario="quick_visits")
         assert long_scale.visit_duration_range[0] >= quick_scale.visit_duration_range[1]
+
+    def test_test_scenario_uses_sub_second_timings(self):
+        scale = create_mock_scale(scenario="test")
+        assert scale.visit_duration_range[1] < 1.0
+        assert scale.empty_duration_range[1] < 1.0
+
+
+class TestSeeding:
+    def test_unseeded_scale_uses_module_random(self):
+        scale = MockAcaiaScale()
+        assert scale._rng is random
+
+    def test_seeded_scale_uses_dedicated_rng(self):
+        scale = MockAcaiaScale(seed=42)
+        assert scale._rng is not random
+        assert isinstance(scale._rng, random.Random)
+
+    def test_same_seed_produces_same_bird_weight(self):
+        s1 = MockAcaiaScale(seed=42)
+        s2 = MockAcaiaScale(seed=42)
+        s1._transition_to_bird()
+        s2._transition_to_bird()
+        assert s1._weight == s2._weight
+
+    def test_different_seeds_produce_different_outputs(self):
+        # Compare against reference `random.Random` instances seeded the
+        # same way. This is fully deterministic (no "did the first draws
+        # happen to collide?" concern) and also pins that `seed=N` wires
+        # through to `random.Random(N)` verbatim.
+        s1 = MockAcaiaScale(seed=1)
+        s2 = MockAcaiaScale(seed=2)
+
+        expected1 = random.Random(1).random()
+        expected2 = random.Random(2).random()
+        assert expected1 != expected2, "chosen seeds must produce different first draws"
+
+        assert s1._rng.random() == expected1
+        assert s2._rng.random() == expected2
+
+    def test_seeded_scale_noise_is_deterministic(self):
+        s1 = MockAcaiaScale(seed=7)
+        s1._weight = 30.0
+        s1._state = BirdState.BIRD_PRESENT
+        s1._state_start_time = time.time()
+
+        s2 = MockAcaiaScale(seed=7)
+        s2._weight = 30.0
+        s2._state = BirdState.BIRD_PRESENT
+        s2._state_start_time = time.time()
+
+        # Reading weight three times in a row should give identical sequences.
+        for _ in range(3):
+            assert s1.weight == s2.weight
+
+    def test_create_mock_scale_passes_seed(self):
+        scale = create_mock_scale(seed=123)
+        assert isinstance(scale._rng, random.Random)
 
 
 class TestFactory:
