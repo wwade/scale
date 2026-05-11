@@ -90,6 +90,51 @@ def get_gmail_credentials():
     return creds
 
 
+def build_battery_alert_message(
+    battery_level,
+    threshold,
+    recipient_email,
+    *,
+    mac_address=None,
+    now=None,
+):
+    """Build the MIME message for a low-battery alert email.
+
+    Pure helper, no Gmail API dependency, so it's easy to unit-test.
+
+    Args:
+        battery_level: Current battery percentage.
+        threshold: Battery threshold that triggered the alert.
+        recipient_email: Address to send the alert to.
+        mac_address: Optional scale MAC to include in the body.
+        now: Optional `datetime` to stamp the body with. Defaults to
+            `datetime.now()`. Tests pass a fixed value for determinism.
+
+    Returns:
+        `email.mime.text.MIMEText` with `to` and `subject` headers set.
+    """
+    timestamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    subject = "Low Battery Alert: Acaia Scale"
+    body = f"""Battery Alert for Acaia Scale
+
+Timestamp: {timestamp}
+Battery Level: {battery_level:.1f}%
+Alert Threshold: {threshold:.1f}%
+"""
+    if mac_address:
+        body += f"Scale MAC Address: {mac_address}\n"
+
+    body += """
+This is an automated alert from your Acaia scale monitoring system.
+Please charge or replace the battery soon to avoid monitoring interruption.
+"""
+
+    message = MIMEText(body)
+    message["to"] = recipient_email
+    message["subject"] = subject
+    return message
+
+
 def send_battery_alert(battery_level, threshold, recipient_email, mac_address=None):
     """Send battery alert email via Gmail API.
 
@@ -109,34 +154,15 @@ def send_battery_alert(battery_level, threshold, recipient_email, mac_address=No
             print("To enable email alerts, set up credentials.json (see documentation)")
             return False
 
-        # Build Gmail service
         service = build("gmail", "v1", credentials=creds)
 
-        # Create email message
-        subject = "Low Battery Alert: Acaia Scale"
-        body = f"""Battery Alert for Acaia Scale
+        message = build_battery_alert_message(
+            battery_level, threshold, recipient_email, mac_address=mac_address
+        )
 
-Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-Battery Level: {battery_level:.1f}%
-Alert Threshold: {threshold:.1f}%
-"""
-        if mac_address:
-            body += f"Scale MAC Address: {mac_address}\n"
-
-        body += """
-This is an automated alert from your Acaia scale monitoring system.
-Please charge or replace the battery soon to avoid monitoring interruption.
-"""
-
-        message = MIMEText(body)
-        message["to"] = recipient_email
-        message["subject"] = subject
-
-        # Encode message
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         create_message = {"raw": encoded_message}
 
-        # Send email
         service.users().messages().send(userId="me", body=create_message).execute()
         print(f"Battery alert email sent to {recipient_email}")
         return True
