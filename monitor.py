@@ -20,7 +20,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from pyacaia import AcaiaScale
 
-from simulator import create_mock_scale
+from simulator import SCENARIOS, create_mock_scale
 
 # Effective-zero deadband for the scale: readings inside
 # [-ZERO_DEADBAND_G, +ZERO_DEADBAND_G] are treated as zero so noise doesn't
@@ -280,10 +280,10 @@ async def discover_acaia_scale():
     return acaia_devices[0].address
 
 
-async def connect_scale(use_simulator, scenario, mac_address):
+async def connect_scale(use_simulator, scenario, mac_address, *, seed=None):
     """Connect to scale (simulator or real hardware)."""
     if use_simulator:
-        scale = create_mock_scale(scenario=scenario)
+        scale = create_mock_scale(scenario=scenario, seed=seed)
         scale.connect()
         return scale
     else:
@@ -306,12 +306,20 @@ async def monitor_scale(
     battery_check_interval=300,
     alert_email=None,
     disable_battery_alerts=False,
+    max_events=None,
 ):
-    """Monitor scale continuously and log bird weights."""
+    """Monitor scale continuously and log bird weights.
+
+    Args:
+        max_events: If set, return after writing this many event rows to
+            the CSV (header row not counted). Useful for tests and
+            short-run smoke checks. `None` means run forever.
+    """
     bird_start_time = None
     last_battery_check = 0
     battery_alert_sent = False
     battery_monitoring_disabled = False
+    event_count = 0
 
     with open(log_file, "a", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
@@ -441,6 +449,10 @@ async def monitor_scale(
                         ]
                     )
                     csv_file.flush()
+                    event_count += 1
+                    if max_events is not None and event_count >= max_events:
+                        print(f"\nReached --max-events={max_events}, exiting.")
+                        return
 
                 if classification == EVENT_AUTO_TARE:
                     scale.tare()
@@ -463,7 +475,7 @@ async def main():
     parser.add_argument(
         "--scenario",
         default="random",
-        choices=["random", "quick_visits", "long_visit", "frequent_tare"],
+        choices=list(SCENARIOS),
         help="Simulation scenario (only with --simulate)",
     )
     parser.add_argument(
@@ -505,6 +517,18 @@ async def main():
     )
     parser.add_argument(
         "--disable-battery-alerts", action="store_true", help="Disable battery email alerts"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed the simulator RNG for deterministic runs (only with --simulate)",
+    )
+    parser.add_argument(
+        "--max-events",
+        type=int,
+        default=None,
+        help="Exit after writing this many event rows to the CSV (useful for tests)",
     )
     args = parser.parse_args()
 
@@ -555,7 +579,7 @@ async def main():
     mac = None
     if args.simulate:
         print(f"Using simulator with scenario: {args.scenario}")
-        scale = await connect_scale(args.simulate, args.scenario, None)
+        scale = await connect_scale(args.simulate, args.scenario, None, seed=args.seed)
     else:
         # Get MAC address
         if not args.discover:
@@ -570,7 +594,7 @@ async def main():
 
         # Connect to scale
         print(f"Connecting to Acaia scale at {mac}...")
-        scale = await connect_scale(args.simulate, args.scenario, mac)
+        scale = await connect_scale(args.simulate, args.scenario, mac, seed=args.seed)
         print("Connected!")
 
     # Start monitoring
@@ -588,6 +612,7 @@ async def main():
         battery_check_interval=args.battery_check_interval,
         alert_email=alert_email,
         disable_battery_alerts=args.disable_battery_alerts,
+        max_events=args.max_events,
     )
 
 
