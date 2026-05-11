@@ -11,23 +11,33 @@ class BirdState(Enum):
     JUNK = "junk"  # Something too light or too heavy
 
 
+SCENARIOS = ("random", "quick_visits", "long_visit", "frequent_tare", "test")
+
+
 class MockAcaiaScale:
     """Mock Acaia scale for testing without hardware."""
 
-    def __init__(self, mac=None, scenario="random"):
+    def __init__(self, mac=None, scenario="random", seed=None):
         """
         Initialize mock scale.
 
         Args:
-            mac: Ignored for mock
-            scenario: Testing scenario to simulate
-                - "random": Random bird visits with occasional junk
-                - "quick_visits": Many quick bird visits
-                - "long_visit": One long bird sitting session
-                - "frequent_tare": Lots of junk requiring tares
+            mac: Ignored for mock.
+            scenario: Testing scenario to simulate.
+                - "random":         Random bird visits with occasional junk.
+                - "quick_visits":   Many quick bird visits.
+                - "long_visit":     One long bird sitting session.
+                - "frequent_tare":  Lots of junk requiring tares.
+                - "test":           Sub-second timings for integration tests.
+            seed: Optional integer seed. When set, the scale uses a
+                dedicated `random.Random(seed)` instance so noise,
+                state-transition timing, and weight selection are all
+                deterministic. When `None`, falls back to the module-level
+                `random` for backward compatibility with existing call sites.
         """
         self.mac = mac
         self.scenario = scenario
+        self._rng = random.Random(seed) if seed is not None else random
         self.connected = False
         self._weight = 0.0
         self._tare_offset = 0.0
@@ -54,6 +64,12 @@ class MockAcaiaScale:
             self.visit_duration_range = (3, 10)
             self.empty_duration_range = (2, 5)
             self.junk_probability = 0.5  # 50% chance of junk
+        elif scenario == "test":
+            # Sub-second timings so subprocess integration tests finish fast.
+            # Not intended for interactive use.
+            self.visit_duration_range = (0.05, 0.15)
+            self.empty_duration_range = (0.02, 0.10)
+            self.junk_probability = 0.3
         else:  # random
             self.visit_duration_range = (5, 20)  # 5-20 seconds
             self.empty_duration_range = (10, 30)  # 10-30 seconds between visits
@@ -83,7 +99,7 @@ class MockAcaiaScale:
         raw_weight = self._weight - self._tare_offset
 
         # Add small random noise to make it realistic
-        noise = random.uniform(-0.5, 0.5)
+        noise = self._rng.uniform(-0.5, 0.5)
         return raw_weight + noise
 
     @property
@@ -101,9 +117,9 @@ class MockAcaiaScale:
         if self._state == BirdState.EMPTY:
             # Check if it's time for something to appear
             min_duration, max_duration = self.empty_duration_range
-            if elapsed > random.uniform(min_duration, max_duration):
+            if elapsed > self._rng.uniform(min_duration, max_duration):
                 # Decide what appears: bird or junk
-                if random.random() < self.junk_probability:
+                if self._rng.random() < self.junk_probability:
                     self._transition_to_junk()
                 else:
                     self._transition_to_bird()
@@ -111,12 +127,12 @@ class MockAcaiaScale:
         elif self._state == BirdState.BIRD_PRESENT:
             # Check if bird should leave
             min_duration, max_duration = self.visit_duration_range
-            if elapsed > random.uniform(min_duration, max_duration):
+            if elapsed > self._rng.uniform(min_duration, max_duration):
                 self._transition_to_empty()
 
         elif self._state == BirdState.JUNK:
             # Junk stays for a short random time
-            if elapsed > random.uniform(2, 6):
+            if elapsed > self._rng.uniform(2, 6):
                 self._transition_to_empty()
 
     def _transition_to_bird(self):
@@ -124,7 +140,7 @@ class MockAcaiaScale:
         self._state = BirdState.BIRD_PRESENT
         self._state_start_time = time.time()
         # Generate a random bird weight and stick with it for this visit
-        self._bird_weight = random.uniform(self.min_bird_weight, self.max_bird_weight)
+        self._bird_weight = self._rng.uniform(self.min_bird_weight, self.max_bird_weight)
         self._weight = self._bird_weight
         print(f"[SIMULATOR] Bird landed ({self._bird_weight:.1f}g)")
 
@@ -142,30 +158,31 @@ class MockAcaiaScale:
         self._state_start_time = time.time()
 
         # Generate either too-light, too-heavy, or negative junk
-        rand = random.random()
+        rand = self._rng.random()
         if rand < 0.33:
             # Light junk (dust, small debris)
-            self._weight = random.uniform(0.5, 15)
+            self._weight = self._rng.uniform(0.5, 15)
             print(f"[SIMULATOR] Light junk on scale ({self._weight:.1f}g)")
         elif rand < 0.66:
             # Heavy junk (cup, bowl, hand, etc.)
-            self._weight = random.uniform(70, 200)
+            self._weight = self._rng.uniform(70, 200)
             print(f"[SIMULATOR] Heavy junk on scale ({self._weight:.1f}g)")
         else:
             # Negative weight (something removed or scale drift)
-            self._weight = random.uniform(-20, -2)
+            self._weight = self._rng.uniform(-20, -2)
             print(f"[SIMULATOR] Negative weight on scale ({self._weight:.1f}g)")
 
 
-def create_mock_scale(mac=None, scenario="random"):
+def create_mock_scale(mac=None, scenario="random", seed=None):
     """
     Factory function to create a mock scale.
 
     Args:
-        mac: MAC address (ignored for mock)
-        scenario: Testing scenario ("random", "quick_visits", "long_visit", "frequent_tare")
+        mac: MAC address (ignored for mock).
+        scenario: Testing scenario; see `MockAcaiaScale` for the list.
+        seed: Optional RNG seed for deterministic runs.
 
     Returns:
         MockAcaiaScale instance
     """
-    return MockAcaiaScale(mac=mac, scenario=scenario)
+    return MockAcaiaScale(mac=mac, scenario=scenario, seed=seed)
