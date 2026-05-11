@@ -52,7 +52,7 @@ indent-style = "space"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15.2",
+    "ruff>=0.15.12",
 ]
 
 [tool.hatch.build.targets.wheel]
