@@ -325,6 +325,7 @@ async def monitor_scale(
     scenario="random",
     mac_address=None,
     interval=1.0,
+    bird_interval=0.5,
     min_bird_weight=25,
     max_bird_weight=60,
     battery_threshold=20.0,
@@ -484,7 +485,8 @@ async def monitor_scale(
                     await asyncio.sleep(0.5)  # Give scale time to process tare
                     continue
 
-                await asyncio.sleep(interval)
+                active_interval = bird_interval if bird_start_time is not None else interval
+                await asyncio.sleep(active_interval)
 
         finally:
             print("\nMonitoring stopped")
@@ -513,6 +515,12 @@ async def main():
         type=float,
         default=1.5,
         help="Polling interval in seconds (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--bird-interval",
+        type=float,
+        default=0.5,
+        help="Polling interval in seconds while a bird is present (default: %(default)s)",
     )
     parser.add_argument(
         "--min-weight", type=float, default=20.0, help="Minimum bird weight in grams (default: 20)"
@@ -569,6 +577,7 @@ async def main():
         print(f"  Scenario: {args.scenario}")
     print(f"  Log file: {args.log_file}")
     print(f"  Polling interval: {args.interval}s")
+    print(f"  Bird polling interval: {args.bird_interval}s")
     print(f"  Bird weight range: {args.min_weight:g}g to {args.max_weight:g}g")
     if alert_email and not args.disable_battery_alerts:
         print(f"  Battery threshold: {args.battery_threshold:g}%")
@@ -635,6 +644,7 @@ async def main():
         scenario=args.scenario,
         mac_address=mac,
         interval=args.interval,
+        bird_interval=args.bird_interval,
         min_bird_weight=args.min_weight,
         max_bird_weight=args.max_weight,
         battery_threshold=args.battery_threshold,
