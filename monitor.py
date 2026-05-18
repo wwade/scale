@@ -286,10 +286,35 @@ async def connect_scale(use_simulator, scenario, mac_address, *, seed=None):
         scale = create_mock_scale(scenario=scenario, seed=seed)
         scale.connect()
         return scale
-    else:
-        scale = AcaiaScale(mac=mac_address)
-        scale.connect()
-        return scale
+    scale = AcaiaScale(mac=mac_address)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, scale.connect)
+    return scale
+
+
+async def connect_scale_with_shutdown(
+    shutdown_event, use_simulator, scenario, mac_address, *, seed=None
+):
+    """Connect to scale, or exit if shutdown_event fires first.
+
+    The executor thread running bluepy's blocking connect cannot be interrupted,
+    so we force-exit with os._exit after cancellation.
+    """
+    connect_task = asyncio.create_task(
+        connect_scale(use_simulator, scenario, mac_address, seed=seed)
+    )
+    shutdown_task = asyncio.create_task(shutdown_event.wait())
+    done, pending = await asyncio.wait(
+        {connect_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    for task in pending:
+        task.cancel()
+    if shutdown_task in done:
+        print("\nConnection cancelled.")
+        # The executor thread is stuck in bluepy's C-level BLE connect and
+        # cannot be interrupted; force-exit so the process doesn't hang.
+        os._exit(0)
+    return connect_task.result()
 
 
 async def monitor_scale(
@@ -592,9 +617,13 @@ async def main():
         else:
             print(f"Using cached MAC address: {mac}")
 
-        # Connect to scale
+        # Connect to scale (executor + shutdown race so Ctrl-C works during connect)
         print(f"Connecting to Acaia scale at {mac}...")
-        scale = await connect_scale(args.simulate, args.scenario, mac, seed=args.seed)
+        scale = await connect_scale_with_shutdown(
+            shutdown_event, args.simulate, args.scenario, mac, seed=args.seed
+        )
+        if scale is None:
+            return
         print("Connected!")
 
     # Start monitoring
