@@ -53,7 +53,7 @@ indent-style = "space"
 [dependency-groups]
 dev = [
     "pytest>=8.3",
-    "ruff>=0.15.13",
+    "ruff>=0.15.14",
 ]
 
 [tool.pytest.ini_options]
