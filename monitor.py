@@ -3,7 +3,7 @@ import asyncio
 import base64
 import contextlib
 import csv
-from datetime import datetime
+from datetime import date, datetime
 from email.mime.text import MIMEText
 import os
 from pathlib import Path
@@ -32,6 +32,13 @@ EVENT_BIRD_LANDED = "bird_landed"
 EVENT_BIRD_PRESENT = "bird_present"
 EVENT_BIRD_LEFT = "bird_left"
 EVENT_IDLE = "idle"
+
+
+def default_log_filename(today=None):
+    """Return the default CSV log filename for a local date."""
+    if today is None:
+        today = date.today()
+    return f"{today:%Y-%m-%d}.csv"
 
 
 def classify_reading(
@@ -495,6 +502,7 @@ async def monitor_scale(
 
 async def main():
     parser = argparse.ArgumentParser(description="Monitor Acaia scale for bird weights")
+    default_log_file = default_log_filename()
     parser.add_argument("--discover", action="store_true", help="Force rediscovery of the scale")
     parser.add_argument(
         "--simulate", action="store_true", help="Use simulator instead of real hardware"
@@ -507,8 +515,8 @@ async def main():
     )
     parser.add_argument(
         "--log-file",
-        default="bird_weights.csv",
-        help="CSV file to log weights (default: bird_weights.csv)",
+        default=default_log_file,
+        help=f"CSV file to log weights (default: {default_log_file})",
     )
     parser.add_argument(
         "--interval",
