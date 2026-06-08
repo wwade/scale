@@ -2,17 +2,34 @@
 
 We only exercise the parts that don't require BLE hardware or Gmail OAuth:
 
+- Default log filename formatting
 - XDG-aware state file path resolution
 - MAC address load/save round-trip
 
 The BLE and Gmail flows are covered (or stubbed out) elsewhere.
 """
 
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 import monitor
+
+
+class TestDefaultLogFilename:
+    def test_formats_given_date_as_iso_csv_filename(self):
+        assert monitor.default_log_filename(date(2026, 6, 7)) == "2026-06-07.csv"
+
+    def test_defaults_to_today(self, monkeypatch):
+        class FixedDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2026, 12, 31)
+
+        monkeypatch.setattr(monitor, "date", FixedDate)
+
+        assert monitor.default_log_filename() == "2026-12-31.csv"
 
 
 @pytest.fixture

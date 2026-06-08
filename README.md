@@ -16,9 +16,9 @@ This project uses `uv` for dependency management and command execution. Prefer r
 # Discover nearby Acaia devices
 uv run python discover.py
 
-# Monitor a real scale and write bird_weights.csv
+# Monitor a real scale and write today's CSV, e.g. 2026-06-07.csv
 uv run monitor
-uv run monitor --interval 1.5 --max-weight 130  # Writes to bird_weights.csv
+uv run monitor --interval 1.5 --max-weight 130  # Writes to today's CSV by default
 
 # Run the simulator instead of real BLE hardware
 uv run monitor --simulate
